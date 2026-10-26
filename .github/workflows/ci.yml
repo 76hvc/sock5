@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: syntax + shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n 语法检查
+        run: |
+          fail=0
+          for f in *.sh src/*.sh tools/*.sh tests/*.sh; do
+            [ -f "$f" ] || continue
+            if bash -n "$f"; then
+              echo "ok   $f"
+            else
+              echo "FAIL $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: 检查 LF 换行
+        run: |
+          fail=0
+          for f in *.sh src/*.sh tools/*.sh tests/*.sh; do
+            [ -f "$f" ] || continue
+            if grep -qU $'\r' "$f"; then
+              echo "CRLF found in $f"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck -S warning -e SC2086,SC1091,SC2016,SC2317 \
+            *.sh src/*.sh tools/*.sh tests/*.sh
+
+  build:
+    name: 生成脚本与源文件一致
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 重新构建
+        run: bash tools/build.sh
+
+      - name: 检查生成物已提交
+        run: |
+          if ! git diff --quiet; then
+            echo "生成的脚本与 src/core.sh 不一致，请本地跑 tools/build.sh 后提交"
+            git diff --stat
+            exit 1
+          fi
+          echo "生成物一致"
+
+  test:
+    name: 逻辑自测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq curl openssl
+
+      - name: 三个脚本分别自测
+        run: |
+          fail=0
+          for f in socks5-install.sh socks5-only.sh http-only.sh; do
+            echo "===== $f ====="
+            bash tests/selftest.sh "$f" || fail=1
+          done
+          exit $fail
+
+      - name: 干跑（验证生成的 systemd unit）
+        run: bash tests/dryrun.sh
+
+      - name: 帮助输出
+        run: |
+          bash socks5-only.sh --help | head -5
+          bash http-only.sh --help | head -5
+          bash socks5-install.sh --help | head -5
+          bash install.sh --help | head -5
